@@ -1,7 +1,7 @@
 {
   "id": "mxc",
   "name": "MXC Sandbox Execution",
-  "description": "OS-level sandboxed tool execution via MXC for MXC-capable Windows hosts: runs commands in ProcessContainer (Windows) with user and machine sandbox policy files.",
+  "description": "OS-level sandboxed tool execution via MXC for MXC-capable hosts: runs commands in ProcessContainer (Windows), Bubblewrap (Linux via process), or Seatbelt (macOS, experimental) with user and machine sandbox policy files.",
   "activation": {
     "onStartup": false,
     "onConfigPaths": ["plugins.entries.mxc"]
@@ -12,7 +12,7 @@
     "properties": {
       "mxcBinaryPath": {
         "type": "string",
-        "description": "Override auto-discovery of wxc-exec (Windows)"
+        "description": "Override auto-discovery of wxc-exec (Windows), the MXC Linux executor, or mxc-exec-mac (macOS)"
       },
       "containment": {
         "type": "string",

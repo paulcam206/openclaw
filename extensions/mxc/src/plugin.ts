@@ -9,7 +9,7 @@ import {
   getWindowsBuildSupportDecision,
 } from "./windows-version.js";
 
-const SUPPORTED_PLATFORMS = new Set(["win32", "darwin"]);
+const SUPPORTED_PLATFORMS = new Set(["win32", "linux", "darwin"]);
 
 export function registerMxcPlugin(api: OpenClawPluginApi): void {
   const config = resolveConfig(api.pluginConfig);

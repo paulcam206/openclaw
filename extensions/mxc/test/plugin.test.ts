@@ -122,7 +122,7 @@ describe("registerMxcPlugin", () => {
     resolveMxcBinaryPathMock.mockReset();
     resolveMxcBinaryPathMock.mockReturnValue("mxc-test-binary");
     unregisterMock.mockClear();
-    setProcessPlatformForTest("darwin");
+    setProcessPlatformForTest("linux");
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   });
 
@@ -175,7 +175,7 @@ describe("registerMxcPlugin", () => {
   });
 
   test("bypasses the Windows build guard on supported non-Windows platforms", () => {
-    setProcessPlatformForTest("darwin");
+    setProcessPlatformForTest("linux");
     const { api } = createApi();
 
     registerMxcPlugin(api);

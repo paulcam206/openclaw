@@ -1,6 +1,8 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -9,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resolveConfig, type MxcConfig } from "../src/config.js";
 import { createMxcSandboxBackendHandle, mxcSandboxBackendManager } from "../src/mxc-backend.js";
 
@@ -47,7 +49,7 @@ const baseParams = {
   config: baseConfig,
   runtimeId: "openclaw-mxc-test-abc12345",
   workdir: "/workspace",
-  platform: "darwin" as NodeJS.Platform,
+  platform: "linux" as NodeJS.Platform,
 };
 
 const testDirs: string[] = [];
@@ -119,6 +121,10 @@ function stringArrayField(value: Record<string, unknown>, key: string): string[]
   return field as string[];
 }
 
+function linuxHomePath(homeDir: string, child: string): string {
+  return `${homeDir.replace(/[\\/]+$/u, "")}/${child}`;
+}
+
 async function withProcessEnv(
   overrides: Record<string, string | undefined>,
   run: () => Promise<void>,
@@ -147,6 +153,8 @@ async function withProcessEnv(
 }
 
 describe("createMxcSandboxBackendHandle", () => {
+  let tempRoot: string | undefined;
+
   beforeEach(() => {
     execFileMock.mockReset();
     stdinEndMock.mockReset();
@@ -171,6 +179,12 @@ describe("createMxcSandboxBackendHandle", () => {
     mockedHomeDir.value = undefined;
     for (const dir of testDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  afterAll(() => {
+    if (tempRoot) {
+      rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
@@ -341,7 +355,7 @@ describe("createMxcSandboxBackendHandle", () => {
   test("buildExecSpec passes configured MXC binary path to the launcher options", async () => {
     const handle = createMxcSandboxBackendHandle({
       ...baseParams,
-      config: { ...baseConfig, mxcBinaryPath: "/custom/mxc-exec-mac" },
+      config: { ...baseConfig, mxcBinaryPath: "/custom/lxc-exec" },
     });
 
     const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
@@ -400,6 +414,45 @@ describe("createMxcSandboxBackendHandle", () => {
     expect(env).toContain("HOME=/home/test");
     expect(env).toContain("LANG=en_US.UTF-8");
     expect(env).toContain("CUSTOM_VAR=value");
+  });
+
+  test("Linux process with network=none drops baseline blocked hosts for Bubblewrap unshare-net", async () => {
+    const handle = createMxcSandboxBackendHandle({
+      ...baseParams,
+      sandboxPolicy: sandboxPolicyOptions({
+        network: {
+          additionalDeniedHosts: ["blocked.example.test"],
+          additionalDeniedCidrs: ["203.0.113.0/24"],
+        },
+        filesystem: {},
+      }),
+    });
+    const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
+
+    const network = objectField(decodeContainerConfig(spec.argv), "network");
+    expect(network.defaultPolicy).toBe("block");
+    expect(network.blockedHosts).toBeUndefined();
+    expect(network.enforcementMode).toBeUndefined();
+  });
+
+  test("Linux process with host rules requests firewall enforcement", async () => {
+    const handle = createMxcSandboxBackendHandle({
+      ...baseParams,
+      config: {
+        ...baseConfig,
+        network: "default",
+      },
+      sandboxPolicy: sandboxPolicyOptions({
+        network: { additionalDeniedHosts: ["blocked.example.test"] },
+        filesystem: {},
+      }),
+    });
+    const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
+
+    const network = objectField(decodeContainerConfig(spec.argv), "network");
+    expect(network.defaultPolicy).toBe("allow");
+    expect(stringArrayField(network, "blockedHosts")).toContain("blocked.example.test");
+    expect(network.enforcementMode).toBe("firewall");
   });
 
   test("timeout falls back to the sandbox baseline when config uses defaults", async () => {
@@ -488,6 +541,142 @@ describe("createMxcSandboxBackendHandle", () => {
     } finally {
       rmSync(workspaceDir, { recursive: true, force: true });
       rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("filesystem policy drops missing paths and keeps existing whitespace paths for Bubblewrap", async () => {
+    const missingPath = "/nonexistent-mxc-test-zzzzzzzzzzz";
+    const existingPathWithSpace = mkdtempSync(path.join(tmpdir(), "mxc-bwrap fs "));
+    const existingFile = path.join(existingPathWithSpace, "denied file.txt");
+    writeFileSync(existingFile, "denied file contents");
+    try {
+      const handle = createMxcSandboxBackendHandle({
+        ...baseParams,
+        config: {
+          ...baseConfig,
+          readwritePaths: [missingPath, existingPathWithSpace, existingFile],
+        },
+        sandboxPolicy: sandboxPolicyOptions({
+          filesystem: {
+            additionalDeniedPaths: [missingPath, existingPathWithSpace],
+            additionalReadonlyPaths: [missingPath, existingPathWithSpace, existingFile],
+          },
+        }),
+      });
+      const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
+
+      const filesystem = objectField(decodeContainerConfig(spec.argv), "filesystem");
+      const readwrite = stringArrayField(filesystem, "readwritePaths");
+      const readonly = stringArrayField(filesystem, "readonlyPaths");
+      const denied = stringArrayField(filesystem, "deniedPaths");
+      expect(readwrite).toContain(existingPathWithSpace);
+      expect(readwrite).toContain(existingFile);
+      expect(readwrite).not.toContain(path.resolve(missingPath));
+      expect(readwrite).not.toContain(missingPath);
+      expect(readonly).toContain(existingPathWithSpace);
+      expect(readonly).toContain(existingFile);
+      expect(readonly).not.toContain(missingPath);
+      expect(denied).toContain(existingPathWithSpace);
+      expect(denied).not.toContain(missingPath);
+    } finally {
+      rmSync(existingPathWithSpace, { recursive: true, force: true });
+    }
+  });
+
+  test("Linux Bubblewrap fails closed for existing readable file-shaped denied paths", async () => {
+    const homeDir = mkdtempSync(path.join(tmpdir(), "mxc-bwrap-home-"));
+    const existingCredentialFile = linuxHomePath(homeDir, ".npmrc");
+    const existingNetrcFile = linuxHomePath(homeDir, ".netrc");
+    const existingCredentialDirectory = linuxHomePath(homeDir, ".ssh");
+    const missingCredentialDirectory = linuxHomePath(homeDir, ".aws");
+    try {
+      mockedHomeDir.value = homeDir;
+      writeFileSync(existingCredentialFile, "//registry.example.test/:_authToken=secret");
+      writeFileSync(existingNetrcFile, "machine example.test login alice password secret");
+      mkdirSync(existingCredentialDirectory);
+
+      expect(statSync(existingCredentialFile).isFile()).toBe(true);
+      expect(statSync(existingNetrcFile).isFile()).toBe(true);
+      expect(statSync(existingCredentialDirectory).isDirectory()).toBe(true);
+      expect(existsSync(missingCredentialDirectory)).toBe(false);
+
+      const handle = createMxcSandboxBackendHandle({
+        ...baseParams,
+        sandboxPolicy: sandboxPolicyOptions({
+          filesystem: { denyCredentialStores: true },
+        }),
+      });
+
+      await expect(
+        handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false }),
+      ).rejects.toThrow(
+        /MXC Bubblewrap cannot safely enforce file-shaped deniedPaths on Linux(?=[\s\S]*\.npmrc)(?=[\s\S]*\.netrc)/u,
+      );
+    } finally {
+      mockedHomeDir.value = undefined;
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test("Linux Bubblewrap expands auth-profile wildcard before filtering denied paths", async () => {
+    const homeDir = mkdtempSync(path.join(tmpdir(), "mxc-bwrap-home-"));
+    const authProfileFile = linuxHomePath(
+      homeDir,
+      ".openclaw/agents/test-agent/agent/auth-profiles.json",
+    );
+    try {
+      mockedHomeDir.value = homeDir;
+      mkdirSync(path.dirname(authProfileFile), { recursive: true });
+      writeFileSync(authProfileFile, '{"token":"secret"}');
+
+      const handle = createMxcSandboxBackendHandle({
+        ...baseParams,
+        sandboxPolicy: sandboxPolicyOptions({
+          filesystem: { denyCredentialStores: true },
+        }),
+      });
+
+      await expect(
+        handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false }),
+      ).rejects.toThrow(/auth-profiles\.json/u);
+    } finally {
+      mockedHomeDir.value = undefined;
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test("Linux Bubblewrap keeps directory denies and filters missing denied paths", async () => {
+    const homeDir = mkdtempSync(path.join(tmpdir(), "mxc-bwrap-home-"));
+    const existingCredentialDirectory = linuxHomePath(homeDir, ".ssh");
+    const missingCredentialDirectory = linuxHomePath(homeDir, ".aws");
+    try {
+      mockedHomeDir.value = homeDir;
+      mkdirSync(existingCredentialDirectory);
+
+      expect(statSync(existingCredentialDirectory).isDirectory()).toBe(true);
+      expect(existsSync(missingCredentialDirectory)).toBe(false);
+
+      const handle = createMxcSandboxBackendHandle({
+        ...baseParams,
+        sandboxPolicy: sandboxPolicyOptions({
+          filesystem: {
+            additionalDeniedPaths: [existingCredentialDirectory, missingCredentialDirectory],
+          },
+        }),
+      });
+      const spec = await handle.buildExecSpec({ command: "echo hello", env: {}, usePty: false });
+
+      const filesystem = objectField(decodeContainerConfig(spec.argv), "filesystem");
+      const denied = stringArrayField(filesystem, "deniedPaths");
+      // Existing directories are representable as Bubblewrap --tmpfs denied
+      // paths and should remain in the MXC policy.
+      expect(denied).toContain(existingCredentialDirectory);
+      // Missing credential stores must still be filtered to avoid Bubblewrap
+      // launch failures.
+      expect(denied).not.toContain(missingCredentialDirectory);
+    } finally {
+      mockedHomeDir.value = undefined;
+      rmSync(homeDir, { recursive: true, force: true });
     }
   });
 
@@ -627,6 +816,97 @@ describe("createMxcSandboxBackendHandle", () => {
     expect(options.signal).toBe(controller.signal);
   });
 
+  test("runShellCommand bridges Linux Bubblewrap stdin through a mounted temp file", async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), "mxc-bwrap-stdin-"));
+    let bridgeDir: string | undefined;
+    let bridgedFile: string | undefined;
+    let bridgedContent: Buffer | undefined;
+    let bridgedMode: number | undefined;
+    execFileMock.mockImplementationOnce(
+      (
+        _binaryPath: string,
+        args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout: Buffer, stderr: Buffer) => void,
+      ) => {
+        const cfg = decodeConfigBase64Argv(args);
+        const processConfig = objectField(cfg, "process");
+        expect(String(processConfig.commandLine)).toContain("<");
+        const legacyBridgeFiles = readdirSync(tempRoot ?? "").filter((entry) =>
+          /^\.openclaw-mxc-stdin-[a-f0-9]{16}\.tmp$/.test(entry),
+        );
+        expect(legacyBridgeFiles).toEqual([]);
+        const bridgeDirName = readdirSync(tempRoot ?? "").find((entry) =>
+          entry.startsWith(".openclaw-mxc-stdin-"),
+        );
+        bridgeDir = bridgeDirName ? path.join(tempRoot ?? "", bridgeDirName) : undefined;
+        bridgedFile = bridgeDir
+          ? path.join(
+              bridgeDir,
+              readdirSync(bridgeDir).find((entry) => entry.endsWith(".tmp")) ?? "",
+            )
+          : undefined;
+        bridgedContent = bridgedFile ? readFileSync(bridgedFile) : undefined;
+        bridgedMode = bridgedFile ? statSync(bridgedFile).mode & 0o777 : undefined;
+        callback(null, Buffer.from("ok"), Buffer.alloc(0));
+        return { stdin: { end: stdinEndMock } };
+      },
+    );
+    const handle = createMxcSandboxBackendHandle({
+      ...baseParams,
+      workdir: tempRoot,
+    });
+
+    await expect(
+      handle.runShellCommand({ script: "cat", stdin: "shell-input", allowFailure: false }),
+    ).resolves.toEqual({ stdout: Buffer.from("ok"), stderr: Buffer.alloc(0), code: 0 });
+
+    expect(stdinEndMock).toHaveBeenCalledWith(Buffer.alloc(0));
+    expect(bridgedContent).toEqual(Buffer.from("shell-input", "utf-8"));
+    if (process.platform !== "win32") {
+      expect(bridgedMode).toBe(0o600);
+    }
+    expect(bridgeDir ? existsSync(bridgeDir) : true).toBe(false);
+  });
+
+  test("runShellCommand removes bridged stdin directory after allowed failures", async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), "mxc-bwrap-stdin-failure-"));
+    let bridgeDir: string | undefined;
+    execFileMock.mockImplementationOnce(
+      (
+        _binaryPath: string,
+        _args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout: Buffer, stderr: Buffer) => void,
+      ) => {
+        const bridgeDirName = readdirSync(tempRoot ?? "").find((entry) =>
+          entry.startsWith(".openclaw-mxc-stdin-"),
+        );
+        bridgeDir = bridgeDirName ? path.join(tempRoot ?? "", bridgeDirName) : undefined;
+        const error = new Error("failed") as Error & {
+          stdout: Buffer;
+          stderr: Buffer;
+          status: number;
+        };
+        error.stdout = Buffer.from("out");
+        error.stderr = Buffer.from("err");
+        error.status = 7;
+        callback(error, error.stdout, error.stderr);
+        return { stdin: { end: stdinEndMock } };
+      },
+    );
+    const handle = createMxcSandboxBackendHandle({
+      ...baseParams,
+      workdir: tempRoot,
+    });
+
+    await expect(
+      handle.runShellCommand({ script: "cat", stdin: "secret", allowFailure: true }),
+    ).resolves.toEqual({ stdout: Buffer.from("out"), stderr: Buffer.from("err"), code: 7 });
+
+    expect(bridgeDir ? existsSync(bridgeDir) : true).toBe(false);
+  });
+
   test("runShellCommand reports executor failures when allowed", async () => {
     execFileMock.mockImplementationOnce(
       (
@@ -652,6 +932,29 @@ describe("createMxcSandboxBackendHandle", () => {
     await expect(
       handle.runShellCommand({ script: "exit 7", stdin: "", allowFailure: true }),
     ).resolves.toEqual({ stdout: Buffer.from("out"), stderr: Buffer.from("err"), code: 7 });
+  });
+
+  test("runShellCommand does not report backend setup failures as allowed command failures", async () => {
+    const homeDir = mkdtempSync(path.join(tmpdir(), "mxc-bwrap-home-"));
+    const existingCredentialFile = linuxHomePath(homeDir, ".npmrc");
+    try {
+      mockedHomeDir.value = homeDir;
+      writeFileSync(existingCredentialFile, "//registry.example.test/:_authToken=secret");
+      const handle = createMxcSandboxBackendHandle({
+        ...baseParams,
+        sandboxPolicy: sandboxPolicyOptions({
+          filesystem: { additionalDeniedPaths: [existingCredentialFile] },
+        }),
+      });
+
+      await expect(
+        handle.runShellCommand({ script: "exit 7", stdin: "", allowFailure: true }),
+      ).rejects.toThrow(/MXC Bubblewrap cannot safely enforce file-shaped deniedPaths/u);
+      expect(execFileMock).not.toHaveBeenCalled();
+    } finally {
+      mockedHomeDir.value = undefined;
+      rmSync(homeDir, { recursive: true, force: true });
+    }
   });
 });
 

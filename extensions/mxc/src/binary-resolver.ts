@@ -43,6 +43,14 @@ function wxcSearchPaths(): string[] {
   return buildSearchPaths("wxc-exec.exe", resolveSdkBinDir());
 }
 
+/** Well-known search paths for MXC's Linux executor. */
+function linuxExecutorSearchPaths(): string[] {
+  const sdkBin = resolveSdkBinDir();
+  const paths = buildSearchPaths("lxc-exec", sdkBin);
+  paths.push("/usr/local/bin/lxc-exec");
+  return paths;
+}
+
 /** Well-known search paths for mxc-exec-mac on macOS. */
 function macSearchPaths(): string[] {
   return buildSearchPaths("mxc-exec-mac", resolveSdkBinDir());
@@ -95,7 +103,10 @@ export function resolveMxcBinaryPath(configOverride?: string): string {
   const platform = os.platform();
   let searchPaths: string[];
   let binaryName: string;
-  if (platform === "darwin") {
+  if (platform === "linux") {
+    searchPaths = linuxExecutorSearchPaths();
+    binaryName = "lxc-exec";
+  } else if (platform === "darwin") {
     searchPaths = macSearchPaths();
     binaryName = "mxc-exec-mac";
   } else {

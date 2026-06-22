@@ -47,6 +47,17 @@ function depsFor(params: {
   return { execFileSync: exec };
 }
 
+const readinessProbeArgs = [
+  "--unshare-user",
+  "--unshare-net",
+  "--ro-bind",
+  "/",
+  "/",
+  "--dev",
+  "/dev",
+  "/bin/true",
+];
+
 describe("assertMxcReadiness", () => {
   test("skips Bubblewrap preflight outside Linux process containment", () => {
     const deps = depsFor({ bwrap: "missing", isoEnvBroker: "running", userns: "denied" });
@@ -86,28 +97,76 @@ describe("assertMxcReadiness", () => {
     }
   });
 
-  test("accepts non-Linux process containment without a Bubblewrap preflight", () => {
+  test("accepts Linux process containment when bwrap and user namespaces are ready", () => {
     const deps = depsFor({ bwrap: "ok", userns: "ok" });
 
     expect(() =>
       assertMxcReadiness({
         config: processConfig,
-        mxcBinaryPath: "wxc-exec.exe",
-        platform: "win32",
+        mxcBinaryPath: "/usr/bin/lxc-exec",
+        platform: "linux",
         deps,
       }),
     ).not.toThrow();
-    expect(deps.execFileSync).not.toHaveBeenCalledWith("bwrap", ["--version"], expect.any(Object));
+    expect(deps.execFileSync).toHaveBeenCalledWith("bwrap", ["--version"], expect.any(Object));
+    expect(deps.execFileSync).toHaveBeenCalledWith("bwrap", readinessProbeArgs, expect.any(Object));
+  });
+
+  test("mounts a readonly filesystem before executing the Bubblewrap probe command", () => {
+    const deps = depsFor({ bwrap: "ok", userns: "ok" });
+
+    assertMxcReadiness({
+      config: processConfig,
+      mxcBinaryPath: "/usr/bin/lxc-exec",
+      platform: "linux",
+      deps,
+    });
+
+    expect(deps.execFileSync).toHaveBeenNthCalledWith(
+      2,
+      "bwrap",
+      readinessProbeArgs,
+      expect.any(Object),
+    );
+  });
+
+  test("reports actionable remediation when Bubblewrap is missing", () => {
+    const deps = depsFor({ bwrap: "missing", userns: "ok" });
+
+    expect(() =>
+      assertMxcReadiness({
+        config: processConfig,
+        mxcBinaryPath: "/usr/bin/lxc-exec",
+        platform: "linux",
+        deps,
+      }),
+    ).toThrow(/install Bubblewrap/u);
+    // Once bwrap itself is missing, the userns probe is skipped — the install
+    // failure already covers that case.
+    expect(deps.execFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  test("reports a failed Bubblewrap sandbox probe", () => {
+    const deps = depsFor({ bwrap: "ok", userns: "denied" });
+
+    expect(() =>
+      assertMxcReadiness({
+        config: processConfig,
+        mxcBinaryPath: "/usr/bin/lxc-exec",
+        platform: "linux",
+        deps,
+      }),
+    ).toThrow(/Bubblewrap sandbox probe failed/u);
   });
 
   test("rejects processcontainer before non-Windows platforms can register", () => {
     const deps = depsFor({ bwrap: "ok", userns: "ok" });
 
-    for (const platform of ["darwin"] satisfies NodeJS.Platform[]) {
+    for (const platform of ["linux", "darwin"] satisfies NodeJS.Platform[]) {
       expect(() =>
         assertMxcReadiness({
           config: { ...processConfig, containment: "processcontainer" },
-          mxcBinaryPath: "mxc-exec-mac",
+          mxcBinaryPath: "/usr/bin/lxc-exec",
           platform,
           deps,
         }),
@@ -129,8 +188,8 @@ describe("assertMxcReadiness", () => {
       expect(() =>
         assertMxcReadiness({
           config: { ...processConfig, containment },
-          mxcBinaryPath: "mxc-exec-mac",
-          platform: "darwin",
+          mxcBinaryPath: "/usr/bin/lxc-exec",
+          platform: "linux",
           deps,
         }),
       ).toThrow(/not enabled/u);

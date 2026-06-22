@@ -25,7 +25,7 @@ describe("resolveMxcBinaryPath", () => {
   beforeEach(() => {
     existsSyncMock.mockReset();
     homedirMock.mockReturnValue("/home/openclaw");
-    platformMock.mockReturnValue("darwin");
+    platformMock.mockReturnValue("linux");
     process.env.PATH = "";
   });
 
@@ -53,9 +53,9 @@ describe("resolveMxcBinaryPath", () => {
   });
 
   test("ignores project bin candidates during discovery", () => {
-    const projectCandidate = path.join(process.cwd(), "bin", "mxc-exec-mac");
+    const projectCandidate = path.join(process.cwd(), "bin", "lxc-exec");
     const trustedDir = "/trusted-path";
-    const pathCandidate = path.join(trustedDir, "mxc-exec-mac");
+    const pathCandidate = path.join(trustedDir, "lxc-exec");
     process.env.PATH = trustedDir;
     existsSyncMock.mockImplementation((candidate) => {
       const candidatePath = String(candidate);
@@ -68,7 +68,7 @@ describe("resolveMxcBinaryPath", () => {
   test("prefers SDK binary over PATH binary", () => {
     const arch = process.arch === "arm64" ? "arm64" : "x64";
     const trustedDir = "/trusted-path";
-    const pathCandidate = path.join(trustedDir, "mxc-exec-mac");
+    const pathCandidate = path.join(trustedDir, "lxc-exec");
     process.env.PATH = trustedDir;
     let sdkCandidate: string | undefined;
     existsSyncMock.mockImplementation((candidate) => {
@@ -76,7 +76,7 @@ describe("resolveMxcBinaryPath", () => {
       if (candidatePath.endsWith(`${path.sep}bin${path.sep}${arch}`)) {
         return true;
       }
-      if (candidatePath.endsWith(`${path.sep}bin${path.sep}${arch}${path.sep}mxc-exec-mac`)) {
+      if (candidatePath.endsWith(`${path.sep}bin${path.sep}${arch}${path.sep}lxc-exec`)) {
         sdkCandidate = candidatePath;
         return true;
       }
@@ -88,7 +88,7 @@ describe("resolveMxcBinaryPath", () => {
 
   test("falls back to PATH when SDK binary is absent", () => {
     const trustedDir = "/trusted-path";
-    const pathCandidate = path.join(trustedDir, "mxc-exec-mac");
+    const pathCandidate = path.join(trustedDir, "lxc-exec");
     process.env.PATH = trustedDir;
     existsSyncMock.mockImplementation((candidate) => String(candidate) === pathCandidate);
 
@@ -96,10 +96,10 @@ describe("resolveMxcBinaryPath", () => {
   });
 
   test("ignores empty and relative PATH entries during discovery", () => {
-    const relativeCandidate = path.join("relative-path", "mxc-exec-mac");
-    const currentDirectoryCandidate = path.join("", "mxc-exec-mac");
+    const relativeCandidate = path.join("relative-path", "lxc-exec");
+    const currentDirectoryCandidate = path.join("", "lxc-exec");
     const trustedDir = "/trusted-path";
-    const trustedCandidate = path.join(trustedDir, "mxc-exec-mac");
+    const trustedCandidate = path.join(trustedDir, "lxc-exec");
     process.env.PATH = `:relative-path:${trustedDir}`;
     existsSyncMock.mockImplementation((candidate) => {
       const candidatePath = String(candidate);

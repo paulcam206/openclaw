@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
+  accessSync,
   closeSync,
+  constants,
   existsSync,
   mkdtempSync,
   openSync,
@@ -518,6 +520,13 @@ function isWindowsProcessContainment(
   return platform === "win32" && (containment === "process" || containment === "processcontainer");
 }
 
+function isLinuxBubblewrapProcess(
+  containment: MxcConfig["containment"],
+  platform: NodeJS.Platform,
+): boolean {
+  return platform === "linux" && containment === "process";
+}
+
 function assertSupportedContainmentForPlatform(
   containment: MxcConfig["containment"],
   platform: NodeJS.Platform,
@@ -549,6 +558,17 @@ function normalizeNetworkPolicyForContainment(params: {
   const hasBlockedHosts = (network.blockedHosts?.length ?? 0) > 0;
   const hasHostRules = hasAllowedHosts || hasBlockedHosts;
 
+  if (isLinuxBubblewrapProcess(params.containment, params.platform)) {
+    if (network.defaultPolicy === "block" && !hasAllowedHosts) {
+      delete network.blockedHosts;
+      return;
+    }
+    if (hasHostRules) {
+      network.enforcementMode = "firewall";
+    }
+    return;
+  }
+
   if (isWindowsProcessContainment(params.containment, params.platform)) {
     network.enforcementMode = hasHostRules ? "both" : "capabilities";
   }
@@ -572,6 +592,82 @@ function dedupeStable(values: readonly string[]): string[] {
     deduped.push(value);
   }
   return deduped;
+}
+
+// Bubblewrap aborts when any source/target path in --bind, --ro-bind, or
+// --tmpfs is missing on the host. The baseline policy intentionally lists
+// macOS/general paths (e.g. /opt/homebrew/*, ~/.aws) that may not exist on
+// every Linux host, so silently drop missing entries before handing the
+// payload to MXC.
+//
+// MXC's Bubblewrap backend currently represents deniedPaths as `--tmpfs <path>`,
+// which only works for directories. A readable file-shaped deny such as
+// ~/.npmrc would otherwise remain readable through MXC's base `--ro-bind / /`.
+// Do not translate these to parent-directory denies: masking $HOME, the project
+// root, or another broad parent can break legitimate sandbox workdirs. Fail
+// closed instead, with an actionable error, until MXC exposes file-mask support.
+function filterMissingBubblewrapFilesystemEntries(
+  filesystem: MxcContainerConfig["filesystem"],
+): MxcContainerConfig["filesystem"] {
+  const keepExisting = (values: readonly string[] | undefined): string[] | undefined => {
+    if (!values) {
+      return values;
+    }
+    return values.filter((value) => existsSync(value));
+  };
+  const unsupportedReadableDeniedFiles: string[] = [];
+  const keepRepresentableDeniedPath = (
+    values: readonly string[] | undefined,
+  ): string[] | undefined => {
+    if (!values) {
+      return values;
+    }
+    return values.filter((value) => {
+      try {
+        const stat = statSync(value);
+        if (stat.isDirectory()) {
+          return true;
+        }
+        if (canReadPath(value)) {
+          unsupportedReadableDeniedFiles.push(value);
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    });
+  };
+  const deniedPaths = keepRepresentableDeniedPath(filesystem.deniedPaths);
+  if (unsupportedReadableDeniedFiles.length > 0) {
+    throw new Error(formatUnsupportedBubblewrapDeniedFilesError(unsupportedReadableDeniedFiles));
+  }
+  return {
+    ...filesystem,
+    readwritePaths: keepExisting(filesystem.readwritePaths),
+    readonlyPaths: keepExisting(filesystem.readonlyPaths),
+    deniedPaths,
+  };
+}
+
+function canReadPath(value: string): boolean {
+  try {
+    accessSync(value, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function formatUnsupportedBubblewrapDeniedFilesError(paths: readonly string[]): string {
+  const listedPaths = paths.map((value) => `  - ${value}`).join("\n");
+  return [
+    "MXC Bubblewrap cannot safely enforce file-shaped deniedPaths on Linux.",
+    "The current MXC backend maps deniedPaths to directory-only --tmpfs mounts; readable files would remain visible through the base readonly root bind.",
+    "OpenClaw is failing closed instead of silently weakening credential protection.",
+    "Remove or relocate these files, deny a narrower directory only when that will not mask HOME/project workdirs, use a different sandbox backend/platform, or upgrade MXC when file-mask support is available.",
+    "Unsupported readable denied path(s):",
+    listedPaths,
+  ].join("\n");
 }
 
 // Windows ProcessContainer normally applies filesystem policy through
@@ -696,7 +792,9 @@ function buildContainerConfig(params: {
     containment: config.containment,
     platform,
   });
-  if (isWindowsProcessContainment(config.containment, platform)) {
+  if (isLinuxBubblewrapProcess(config.containment, platform)) {
+    merged.filesystem = filterMissingBubblewrapFilesystemEntries(merged.filesystem);
+  } else if (isWindowsProcessContainment(config.containment, platform)) {
     merged.filesystem = filterMissingWindowsProcessFilesystemEntries(merged.filesystem);
   }
   return merged;
@@ -801,7 +899,12 @@ export function createMxcSandboxBackendHandle(params: {
         script: cmdParams.script,
         workdir: effectiveWorkdir,
       });
-      const execInput = cmdParams.stdin === undefined ? Buffer.alloc(0) : toBuffer(cmdParams.stdin);
+      const stdinBridge = createLinuxBubblewrapStdinBridge({
+        config: restrictiveConfig,
+        platform,
+        workdir: effectiveWorkdir,
+        stdin: cmdParams.stdin,
+      });
 
       try {
         const payload = buildContainerConfig({
@@ -814,13 +917,14 @@ export function createMxcSandboxBackendHandle(params: {
           workdir: effectiveWorkdir,
           env: {},
           platform,
+          stdinFile: stdinBridge.filePath,
         });
 
         const argv = buildMxcArgv(restrictiveConfig, payload);
         const [binaryPath, ...args] = argv;
         try {
           return await execFileBuffered(binaryPath, args, {
-            input: execInput,
+            input: stdinBridge.execInput,
             timeout: 30_000,
             maxBuffer: 10 * 1024 * 1024,
             signal: cmdParams.signal,
@@ -846,6 +950,7 @@ export function createMxcSandboxBackendHandle(params: {
         }
       } finally {
         commandBridge.cleanup();
+        stdinBridge.cleanup();
       }
     },
   };
@@ -910,6 +1015,32 @@ function toOptionalBuffer(value: Buffer | string | undefined): Buffer {
     return Buffer.alloc(0);
   }
   return toBuffer(value);
+}
+
+function createLinuxBubblewrapStdinBridge(params: {
+  config: MxcConfig;
+  platform: NodeJS.Platform;
+  workdir: string;
+  stdin: SandboxBackendCommandParams["stdin"];
+}): { execInput: Buffer; filePath?: string; cleanup: () => void } {
+  const input = params.stdin === undefined ? Buffer.alloc(0) : toBuffer(params.stdin);
+  if (input.length === 0 || !isLinuxBubblewrapProcess(params.config.containment, params.platform)) {
+    return { execInput: input, cleanup: () => {} };
+  }
+
+  const bridgeDir = mkdtempSync(path.join(params.workdir, ".openclaw-mxc-stdin-"));
+  const filePath = path.join(bridgeDir, `${randomBytes(8).toString("hex")}.tmp`);
+  try {
+    writeFileSync(filePath, input, { flag: "wx", mode: 0o600 });
+  } catch (err) {
+    rmSync(bridgeDir, { force: true, recursive: true });
+    throw err;
+  }
+  return {
+    execInput: Buffer.alloc(0),
+    filePath,
+    cleanup: () => rmSync(bridgeDir, { force: true, recursive: true }),
+  };
 }
 
 function toBuffer(value: Buffer | string): Buffer {

@@ -1,14 +1,16 @@
 # MXC sandbox execution plugin
 
 Use the MXC plugin to run OpenClaw exec-tool commands inside OS-level
-containment on Windows hosts where MXC can create the selected sandbox backend.
-In this README, an MXC-capable host means the gateway or node host has the MXC
-executor installed and passes the platform readiness checks below.
+containment on hosts where MXC can create the selected sandbox backend. In this
+README, an MXC-capable host means the gateway or node host has the MXC executor
+installed and passes the platform readiness checks below.
 
 The recommended path is explicit opt-in with MXC's abstract `process`
 containment:
 
 - Windows: ProcessContainer / AppContainer.
+- Linux: Bubblewrap.
+- macOS: Seatbelt.
 
 The plugin builds MXC sandbox payloads for OpenClaw tool execution and applies
 filesystem, network, and timeout policy before commands reach the host.
@@ -17,10 +19,14 @@ filesystem, network, and timeout policy before commands reach the host.
 
 - OpenClaw must load the bundled `mxc` plugin, and `plugins.entries.mxc.enabled`
   must be `true`.
-- The host must be Windows.
+- The host must be Windows, Linux, or macOS.
 - Windows hosts must be Windows build 26100 or later. Builds 26100 through 26499
   also require UBR 7965 or later. The IsoEnvBroker service must be running
   because MXC uses BaseContainer for AppContainer brokering.
+- Linux hosts must have the MXC Linux executor available and Bubblewrap installed
+  on `PATH`.
+- macOS support uses MXC Seatbelt containment and is experimental. Prefer
+  `containment: "process"` unless you are validating a platform-specific path.
 
 ## Quickstart
 
@@ -83,6 +89,8 @@ are loaded in this order:
 1. User policy: `~/.openclaw/sandbox-policy.json`
 2. Machine policy:
    - Windows: `C:\ProgramData\openclaw\sandbox-policy.json`
+   - macOS: `/Library/Application Support/openclaw/sandbox-policy.json`
+   - Linux/other Unix: `/etc/openclaw/sandbox-policy.json`
 
 Example user policy:
 
@@ -122,15 +130,61 @@ Before registering the sandbox backend, the plugin checks the Windows build,
 UBR threshold, and IsoEnvBroker availability. Unsupported hosts leave the plugin
 dormant and print remediation.
 
+### Linux
+
+With `containment: "process"`, the plugin checks readiness before it registers
+the sandbox backend. Load fails with remediation if any requirement is missing:
+
+1. The MXC Linux executor is discoverable.
+2. `bwrap --version` succeeds, meaning Bubblewrap is installed and on `PATH`.
+3. A minimal
+   `bwrap --unshare-user --unshare-net --ro-bind / / --dev /dev /bin/true`
+   probe exits 0, proving the kernel and any active Linux Security Module allow
+   the unprivileged user namespace and mount syscalls the sandbox needs. The
+   root bind is readonly and only makes `/bin/true` plus its loader/libraries
+   available inside the probe sandbox.
+
+Common remediation:
+
+```bash
+# Debian/Ubuntu
+sudo apt install bubblewrap
+
+# Fedora/RHEL
+sudo dnf install bubblewrap
+
+# Alpine
+apk add bubblewrap
+```
+
+If the probe fails after `bwrap` is installed, the host is blocking unprivileged
+user namespaces:
+
+- Debian and older Ubuntu kernels: `sudo sysctl -w kernel.unprivileged_userns_clone=1`
+  (persist via `/etc/sysctl.d/`).
+- Ubuntu 24.04 and other distros with restricted AppArmor profiles:
+  `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` or grant the
+  AppArmor `userns` capability to `bwrap`.
+- Distros that omit the sysctl entirely, such as Fedora and Arch on recent
+  kernels, usually allow unprivileged user namespaces by default. If the probe
+  still fails, check the kernel `CONFIG_USER_NS` setting and any custom Linux
+  Security Module policy.
+
+### macOS
+
+macOS uses MXC Seatbelt support through abstract `process` containment. Treat it
+as experimental until validated on the target host.
+
 ## Backend selection
 
-| Value                                                     | Platform | Status       | Notes                                                                         |
-| --------------------------------------------------------- | -------- | ------------ | ----------------------------------------------------------------------------- |
-| `process`                                                 | Windows  | Recommended  | MXC resolves to ProcessContainer on Windows.                                  |
-| `processcontainer`                                        | Windows  | Supported    | Direct Windows ProcessContainer selection. Rejected on non-Windows platforms. |
-| `windows_sandbox`, `wslc`, `microvm`, `isolation_session` | Windows  | Experimental | Requires MXC experimental support that this plugin does not enable.           |
+| Value                                                     | Platform              | Status       | Notes                                                                                    |
+| --------------------------------------------------------- | --------------------- | ------------ | ---------------------------------------------------------------------------------------- |
+| `process`                                                 | Windows, Linux, macOS | Recommended  | MXC resolves to ProcessContainer on Windows, Bubblewrap on Linux, and Seatbelt on macOS. |
+| `processcontainer`                                        | Windows               | Supported    | Direct Windows ProcessContainer selection. Rejected on non-Windows platforms.            |
+| `seatbelt`                                                | macOS                 | Experimental | Prefer abstract `process`; direct `seatbelt` requires MXC experimental support.          |
+| `windows_sandbox`, `wslc`, `microvm`, `isolation_session` | Windows               | Experimental | Requires MXC experimental support that this plugin does not enable.                      |
 
-When `mxcBinaryPath` is unset, the resolver searches for the Windows MXC
+When `mxcBinaryPath` is unset, the resolver searches for the platform MXC
 executor in this order:
 
 1. `@microsoft/mxc-sdk/bin/<arch>/<binary>` or `@microsoft/mxc-sdk/bin/<binary>`
@@ -154,6 +208,12 @@ without that top-level `enabled: true` flag.
 Check the Windows build, UBR, and IsoEnvBroker service. Unsupported Windows
 hosts leave the plugin dormant instead of registering a backend that cannot run.
 
+### Linux readiness fails after installing Bubblewrap
+
+Run `bwrap --version`, then check whether unprivileged user namespaces are
+blocked by kernel or Linux Security Module policy. See the Linux remediation
+commands above.
+
 ### Policy file loading fails
 
 Validate the JSON shape in `~/.openclaw/sandbox-policy.json` and the machine
@@ -174,9 +234,17 @@ launcher. The launcher imports `@microsoft/mxc-sdk`, calls
 
 `runShellCommand` is used by management and filesystem bridge paths. It calls the
 MXC executor directly with `--config-base64`, no PTY, forced `network: "none"`,
-and a 30 second timeout.
+and a 30 second timeout. On Linux Bubblewrap, non-empty stdin is written to a
+temporary file inside the mounted workdir and the command reads from that file,
+because MXC's current Bubblewrap runner starts `bwrap` with stdin closed.
 
-Windows ProcessContainer uses MXC capabilities for network isolation.
+Linux network policy is platform-aware:
+
+- `network: "none"` with no allowlist drops baseline blocked hosts so MXC can use
+  Bubblewrap's strict network namespace path.
+- Host allow/block rules under Linux `process` request MXC firewall enforcement
+  instead of AppContainer capabilities.
+- Windows ProcessContainer still uses capabilities for network isolation.
 
 ### Limitations
 
