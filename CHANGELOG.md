@@ -1223,6 +1223,7 @@ This audited record covers the complete v2026.6.2-beta.1..v2026.6.5 history: 142
 
 ### Fixes
 
+- MXC: add the initial sandbox execution plugin for MXC-capable hosts.
 - Channels/outbound: keep channel sends durable when transcript mirroring fails, stop schema-padded poll modifiers from blocking normal sends, preserve WebChat `sessions_send` handoffs, preserve Discord channel-label suppression while hiding internal agent failure traces, match Discord libopus error shapes, and sanitize Discord tool progress scaffolding. (#89626, #89812, #89601) Thanks @Petru2224, @codezz, @takhoffman, @harjothkhara, and @vincentkoc.
 - Telegram/Feishu: require admin rights for Telegram target writeback, keep Telegram DM exec approval allowlists working with `ask:off`, prevent Telegram preview duplication across streaming modes, isolate verbose status after streamed finals, cancel clean restart stop timers, slow polling restart storms, and wire Feishu setup runtime setters. (#88973, #89035, #89813, #89814) Thanks @pgondhi987, @zhangguiping-xydt, @ppmuzyk, @takhoffman, @vincentkoc, @obviyus, @kesslerio, @glenn-agent, and @leiJack-lo.
 - Feishu: preserve full streaming card content by sending the merged text on each update instead of only the latest delta, so card readers see complete output when intermediate frames are missed. (#90181) Thanks @mushuiyu886.
