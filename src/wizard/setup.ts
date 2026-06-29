@@ -184,9 +184,10 @@ async function runSetupWizardOnce(
     return;
   }
 
-  const compatibilityNotices = snapshot.valid
-    ? buildPluginCompatibilitySnapshotNotices({ config: baseConfig })
-    : [];
+  const compatibilityNotices =
+    snapshot.valid && snapshot.exists
+      ? buildPluginCompatibilitySnapshotNotices({ config: baseConfig })
+      : [];
   if (compatibilityNotices.length > 0) {
     await prompter.note(
       [

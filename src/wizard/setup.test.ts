@@ -1582,6 +1582,40 @@ describe("runSetupWizard", () => {
     expect(legacyPluginNotes.length).toBeGreaterThan(0);
   });
 
+  it("skips plugin compatibility notices on first run without config", async () => {
+    buildPluginCompatibilitySnapshotNotices.mockClear();
+    readConfigFileSnapshot.mockResolvedValueOnce({
+      path: "/tmp/.openclaw/openclaw.json",
+      exists: false,
+      raw: null,
+      parsed: {},
+      resolved: {},
+      valid: true,
+      config: {},
+      issues: [],
+      warnings: [],
+      legacyIssues: [],
+    });
+
+    await runSetupWizard(
+      {
+        acceptRisk: true,
+        flow: "quickstart",
+        authChoice: "skip",
+        installDaemon: false,
+        skipProviders: true,
+        skipSkills: true,
+        skipSearch: true,
+        skipHealth: true,
+        skipUi: true,
+      },
+      createRuntime(),
+      buildWizardPrompter(),
+    );
+
+    expect(buildPluginCompatibilitySnapshotNotices).not.toHaveBeenCalled();
+  });
+
   it("resolves gateway.auth.password SecretRef for local setup probe", async () => {
     const previous = process.env.OPENCLAW_GATEWAY_PASSWORD;
     process.env.OPENCLAW_GATEWAY_PASSWORD = "gateway-ref-password"; // pragma: allowlist secret
