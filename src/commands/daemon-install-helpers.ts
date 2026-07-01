@@ -341,56 +341,60 @@ function mergeServicePath(
   tmpDir: string | undefined,
   platform: NodeJS.Platform,
 ): string | undefined {
+  const targetPath = platform === "win32" ? path.win32 : path.posix;
   const segments: string[] = [];
   const seen = new Set<string>();
   const normalizedTmpDirs = [tmpDir, os.tmpdir()]
     .map((value) => value?.trim())
     .filter((value): value is string => Boolean(value))
-    .map((value) => path.resolve(value));
+    .map((value) => targetPath.resolve(value));
   const realTmpDirs = normalizedTmpDirs.map((tmpRoot) => {
     try {
-      return path.normalize(fs.realpathSync.native(tmpRoot));
+      return targetPath.normalize(fs.realpathSync.native(tmpRoot));
     } catch {
       return tmpRoot;
     }
   });
   const isSameOrChildPath = (candidate: string, parent: string) =>
-    candidate === parent || candidate.startsWith(`${parent}${path.sep}`);
+    candidate === parent || candidate.startsWith(`${parent}${targetPath.sep}`);
   const isUnsafeProcPath = (candidate: string) =>
-    candidate === `${path.sep}proc` || candidate.startsWith(`${path.sep}proc${path.sep}`);
+    candidate === `${targetPath.sep}proc` ||
+    candidate.startsWith(`${targetPath.sep}proc${targetPath.sep}`);
   const realpathExistingPath = (candidate: string): string | undefined => {
     const parts: string[] = [];
     let current = candidate;
-    while (current && current !== path.dirname(current)) {
+    while (current && current !== targetPath.dirname(current)) {
       try {
-        const realCurrent = path.normalize(fs.realpathSync.native(current));
-        return path.normalize(path.join(realCurrent, ...parts.toReversed()));
+        const realCurrent = targetPath.normalize(fs.realpathSync.native(current));
+        return targetPath.normalize(targetPath.join(realCurrent, ...parts.toReversed()));
       } catch {
-        parts.push(path.basename(current));
-        current = path.dirname(current);
+        parts.push(targetPath.basename(current));
+        current = targetPath.dirname(current);
       }
     }
     try {
-      return path.normalize(path.join(fs.realpathSync.native(current), ...parts.toReversed()));
+      return targetPath.normalize(
+        targetPath.join(fs.realpathSync.native(current), ...parts.toReversed()),
+      );
     } catch {
       return undefined;
     }
   };
   const normalizePreservedPathSegment = (segment: string): string | undefined => {
-    if (!path.isAbsolute(segment)) {
+    if (!targetPath.isAbsolute(segment)) {
       return undefined;
     }
-    const normalized = path.normalize(segment);
+    const normalized = targetPath.normalize(segment);
     if (isUnsafeProcPath(normalized)) {
       return undefined;
     }
-    const cwd = path.resolve(process.cwd());
+    const cwd = targetPath.resolve(process.cwd());
     if (isSameOrChildPath(normalized, cwd)) {
       return undefined;
     }
     try {
       const realSegment = realpathExistingPath(normalized);
-      const realCwd = path.normalize(fs.realpathSync.native(cwd));
+      const realCwd = targetPath.normalize(fs.realpathSync.native(cwd));
       if (realSegment && isSameOrChildPath(realSegment, realCwd)) {
         return undefined;
       }
@@ -403,7 +407,7 @@ function mergeServicePath(
     if (isNonMinimalServicePathEntry(segment, platform)) {
       return false;
     }
-    const resolved = path.resolve(segment);
+    const resolved = targetPath.resolve(segment);
     const realResolved = realpathExistingPath(resolved) ?? resolved;
     return ![...normalizedTmpDirs, ...realTmpDirs].some(
       (tmpRoot) => isSameOrChildPath(resolved, tmpRoot) || isSameOrChildPath(realResolved, tmpRoot),
@@ -413,7 +417,7 @@ function mergeServicePath(
     if (typeof value !== "string" || value.trim().length === 0) {
       return;
     }
-    for (const segment of value.split(path.delimiter)) {
+    for (const segment of value.split(targetPath.delimiter)) {
       const trimmed = segment.trim();
       const candidate = options?.preserve ? normalizePreservedPathSegment(trimmed) : trimmed;
       if (options?.preserve && (!candidate || !shouldPreserveNormalizedPathSegment(candidate))) {
@@ -430,7 +434,7 @@ function mergeServicePath(
   if (platform !== "darwin") {
     addPath(existingPath, { preserve: true });
   }
-  return segments.length > 0 ? segments.join(path.delimiter) : undefined;
+  return segments.length > 0 ? segments.join(targetPath.delimiter) : undefined;
 }
 
 // Operator opt-in env vars that should survive service regeneration even though
