@@ -211,7 +211,7 @@ export async function runCase({
   return await new Promise((resolve) => {
     const child = spawnImpl(
       process.execPath,
-      ["--import", hookPath, "--input-type=module", "--eval", body],
+      ["--import", pathToFileURL(hookPath).href, "--input-type=module", "--eval", body],
       {
         cwd: repoRoot,
         detached: process.platform !== "win32",
@@ -399,7 +399,7 @@ async function cleanupActiveCaseChildrenForParentSignal(signal) {
 
 function buildImportBody(entryFiles, label) {
   const imports = entryFiles
-    .map((filePath) => `await import(${JSON.stringify(filePath)});`)
+    .map((filePath) => `await import(${JSON.stringify(pathToFileURL(filePath).href)});`)
     .join("\n");
   return `${imports}\nconsole.log(${JSON.stringify(label)});\nprocess.exit(0);\n`;
 }

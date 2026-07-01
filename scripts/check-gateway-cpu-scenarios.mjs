@@ -29,6 +29,7 @@ const SINGLE_VALUE_FLAGS = new Set([
   "--hot-wall-warn-ms",
   "--output-dir",
   "--runs",
+  "--startup-timeout-ms",
   "--warmup",
 ]);
 const DEFAULT_CPU_CORE_WARN = 0.9;
@@ -50,6 +51,7 @@ function parseArgs(argv) {
     startupCases: [],
     qaScenarios: [],
     runs: 1,
+    startupTimeoutMs: null,
     warmup: 0,
     skipStartup: false,
     skipQa: false,
@@ -85,6 +87,9 @@ function parseArgs(argv) {
         break;
       case "--runs":
         options.runs = parsePositiveInt(readValue(), "--runs");
+        break;
+      case "--startup-timeout-ms":
+        options.startupTimeoutMs = parsePositiveInt(readValue(), "--startup-timeout-ms");
         break;
       case "--warmup":
         options.warmup = parseNonNegativeInt(readValue(), "--warmup");
@@ -129,6 +134,7 @@ Runs a small gateway CPU scenario suite against built dist artifacts.
 Options:
   --output-dir <path>        Artifact directory
   --startup-case <id>        Startup bench case, repeatable
+  --startup-timeout-ms <ms>  Startup bench timeout per run
   --qa-scenario <id>         QA Lab scenario, repeatable
   --runs <count>             Startup bench runs per case (default: 1)
   --warmup <count>           Startup bench warmup runs per case (default: 0)
@@ -320,6 +326,9 @@ async function runGatewayCpuScenarios(options, params = {}) {
               String(options.runs),
               "--warmup",
               String(options.warmup),
+              ...(options.startupTimeoutMs
+                ? ["--timeout-ms", String(options.startupTimeoutMs)]
+                : []),
               "--output",
               startupOutput,
               ...options.startupCases.flatMap((id) => ["--case", id]),

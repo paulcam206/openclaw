@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WindowsPerformanceRecorder Version="1.0" Author="OpenClaw" Team="OpenClaw">
+  <Profiles>
+    <SystemCollector Id="OpenClawSystemCollector" Name="NT Kernel Logger">
+      <BufferSize Value="128" />
+      <Buffers Value="2" PercentageOfTotalMemory="true" MaximumBufferSpace="128" />
+    </SystemCollector>
+
+    <SystemProvider Id="OpenClawSystemProviderLight">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="Loader" />
+        <Keyword Value="DiskIO" />
+        <Keyword Value="FileIO" />
+        <Keyword Value="HardFaults" />
+      </Keywords>
+    </SystemProvider>
+
+    <SystemProvider Id="OpenClawSystemProviderDeep">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="Loader" />
+        <Keyword Value="DiskIO" />
+        <Keyword Value="FileIO" />
+        <Keyword Value="FileIOInit" />
+        <Keyword Value="HardFaults" />
+        <Keyword Value="Registry" />
+        <Keyword Value="NetworkTrace" />
+        <Keyword Value="SampledProfile" />
+        <Keyword Value="CSwitch" />
+        <Keyword Value="ReadyThread" />
+      </Keywords>
+      <Stacks>
+        <Stack Value="SampledProfile" />
+        <Stack Value="CSwitch" />
+        <Stack Value="ReadyThread" />
+      </Stacks>
+    </SystemProvider>
+
+    <SystemProvider Id="OpenClawSystemProviderDeepCompat">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="Loader" />
+        <Keyword Value="DiskIO" />
+        <Keyword Value="FileIO" />
+        <Keyword Value="HardFaults" />
+        <Keyword Value="Registry" />
+        <Keyword Value="NetworkTrace" />
+        <Keyword Value="SampledProfile" />
+        <Keyword Value="CSwitch" />
+        <Keyword Value="ReadyThread" />
+      </Keywords>
+      <Stacks>
+        <Stack Value="SampledProfile" />
+        <Stack Value="CSwitch" />
+        <Stack Value="ReadyThread" />
+      </Stacks>
+    </SystemProvider>
+
+    <Profile
+      Id="OpenClawWindowsLight.Verbose.Memory"
+      Name="OpenClawWindowsLight"
+      Description="OpenClaw Windows light process and I/O capture"
+      LoggingMode="Memory"
+      DetailLevel="Verbose"
+    >
+      <Collectors>
+        <SystemCollectorId Value="OpenClawSystemCollector">
+          <SystemProviderId Value="OpenClawSystemProviderLight" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+
+    <Profile
+      Id="OpenClawWindowsLight.Verbose.File"
+      Name="OpenClawWindowsLight"
+      Description="OpenClaw Windows light process and I/O capture"
+      LoggingMode="File"
+      DetailLevel="Verbose"
+    >
+      <Collectors>
+        <SystemCollectorId Value="OpenClawSystemCollector">
+          <SystemProviderId Value="OpenClawSystemProviderLight" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+
+    <Profile
+      Id="OpenClawWindowsDeep.Verbose.Memory"
+      Name="OpenClawWindowsDeep"
+      Description="OpenClaw Windows CPU, I/O, registry, network, and scheduler capture"
+      LoggingMode="Memory"
+      DetailLevel="Verbose"
+    >
+      <Collectors>
+        <SystemCollectorId Value="OpenClawSystemCollector">
+          <SystemProviderId Value="OpenClawSystemProviderDeep" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+
+    <Profile
+      Id="OpenClawWindowsDeep.Verbose.File"
+      Name="OpenClawWindowsDeep"
+      Description="OpenClaw Windows CPU, I/O, registry, network, and scheduler capture"
+      LoggingMode="File"
+      DetailLevel="Verbose"
+    >
+      <Collectors>
+        <SystemCollectorId Value="OpenClawSystemCollector">
+          <SystemProviderId Value="OpenClawSystemProviderDeep" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+
+    <Profile
+      Id="OpenClawWindowsDeepCompat.Verbose.Memory"
+      Name="OpenClawWindowsDeepCompat"
+      Description="OpenClaw Windows deep capture without FileIOInit for OS compatibility"
+      LoggingMode="Memory"
+      DetailLevel="Verbose"
+    >
+      <Collectors>
+        <SystemCollectorId Value="OpenClawSystemCollector">
+          <SystemProviderId Value="OpenClawSystemProviderDeepCompat" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+
+    <Profile
+      Id="OpenClawWindowsDeepCompat.Verbose.File"
+      Name="OpenClawWindowsDeepCompat"
+      Description="OpenClaw Windows deep capture without FileIOInit for OS compatibility"
+      LoggingMode="File"
+      DetailLevel="Verbose"
+    >
+      <Collectors>
+        <SystemCollectorId Value="OpenClawSystemCollector">
+          <SystemProviderId Value="OpenClawSystemProviderDeepCompat" />
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

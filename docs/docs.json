@@ -2009,7 +2009,8 @@
                 "pages": [
                   "help/testing",
                   "help/testing-updates-plugins",
-                  "help/testing-live"
+                  "help/testing-live",
+                  "help/windows-performance-profiling"
                 ]
               },
               {
