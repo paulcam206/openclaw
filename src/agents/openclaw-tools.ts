@@ -27,6 +27,11 @@ import {
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
 import {
+  buildMediaToolBundleCacheKey,
+  readMediaToolBundleCache,
+  writeMediaToolBundleCache,
+} from "./openclaw-tools.media-cache.js";
+import {
   isToolExplicitlyAllowedByFactoryPolicy,
   mergeFactoryPolicyList,
   resolveImageToolFactoryAvailable,
@@ -277,27 +282,70 @@ export function createOpenClawTools(
     options?.runSessionKey ?? options?.agentSessionKey,
   );
   const imageToolAgentDir = options?.agentDir;
-  const imageTool = resolveImageToolFactoryAvailable({
+  const imageToolAvailable = resolveImageToolFactoryAvailable({
     config: availabilityConfig ?? resolvedConfig,
     agentDir: imageToolAgentDir,
     workspaceDir,
     modelHasVision: options?.modelHasVision,
     authStore: options?.authProfileStore,
-  })
-    ? createImageTool({
-        config: availabilityConfig ?? options?.config,
-        agentDir: imageToolAgentDir!,
-        authProfileStore: options?.authProfileStore,
-        workspaceDir,
-        sandbox,
-        fsPolicy: options?.fsPolicy,
-        agentChannel: options?.agentChannel,
-        agentAccountId: options?.agentAccountId,
-        currentChannelId: options?.currentChannelId,
-        modelHasVision: options?.modelHasVision,
-        deferAutoModelResolution: true,
-      })
-    : null;
+  });
+  const mediaCacheSessionKey = normalizeOptionalString(options?.agentSessionKey);
+  const mediaCacheKey = buildMediaToolBundleCacheKey({
+    imageToolAvailable,
+    optionalMediaTools,
+    config: resolvedConfig,
+    availabilityConfig,
+    authProfileStore: options?.authProfileStore,
+    fsPolicy: options?.fsPolicy,
+    sandboxFsBridge: options?.sandboxFsBridge,
+    agentDir: imageToolAgentDir,
+    workspaceDir,
+    sandboxRoot: options?.sandboxRoot,
+    sandboxContainerWorkdir: options?.sandboxContainerWorkdir,
+    agentChannel: options?.agentChannel,
+    agentAccountId: options?.agentAccountId,
+    currentChannelId: options?.currentChannelId,
+    modelHasVision: options?.modelHasVision,
+    pluginToolAllowlist: options?.pluginToolAllowlist,
+    pluginToolDenylist: options?.pluginToolDenylist,
+  });
+  let mediaBundle =
+    mediaCacheSessionKey && readMediaToolBundleCache(mediaCacheSessionKey, mediaCacheKey);
+  if (!mediaBundle) {
+    mediaBundle = {
+      imageTool: imageToolAvailable
+        ? createImageTool({
+            config: availabilityConfig ?? options?.config,
+            agentDir: imageToolAgentDir!,
+            authProfileStore: options?.authProfileStore,
+            workspaceDir,
+            sandbox,
+            fsPolicy: options?.fsPolicy,
+            agentChannel: options?.agentChannel,
+            agentAccountId: options?.agentAccountId,
+            currentChannelId: options?.currentChannelId,
+            modelHasVision: options?.modelHasVision,
+            deferAutoModelResolution: true,
+          })
+        : null,
+      pdfTool:
+        optionalMediaTools.pdf && options?.agentDir?.trim()
+          ? createPdfTool({
+              config: options?.config,
+              agentDir: options.agentDir,
+              authProfileStore: options?.authProfileStore,
+              workspaceDir,
+              sandbox,
+              fsPolicy: options?.fsPolicy,
+              deferAutoModelResolution: true,
+            })
+          : null,
+    };
+    if (mediaCacheSessionKey) {
+      writeMediaToolBundleCache(mediaCacheSessionKey, mediaCacheKey, mediaBundle);
+    }
+  }
+  const { imageTool, pdfTool } = mediaBundle;
   options?.recordToolPrepStage?.("openclaw-tools:image-tool");
   const imageGenerateTool = optionalMediaTools.imageGenerate
     ? createImageGenerateTool({
@@ -341,18 +389,6 @@ export function createOpenClawTools(
       })
     : null;
   options?.recordToolPrepStage?.("openclaw-tools:music-generate-tool");
-  const pdfTool =
-    optionalMediaTools.pdf && options?.agentDir?.trim()
-      ? createPdfTool({
-          config: options?.config,
-          agentDir: options.agentDir,
-          authProfileStore: options?.authProfileStore,
-          workspaceDir,
-          sandbox,
-          fsPolicy: options?.fsPolicy,
-          deferAutoModelResolution: true,
-        })
-      : null;
   options?.recordToolPrepStage?.("openclaw-tools:pdf-tool");
   const webSearchTool = createWebSearchTool({
     config: options?.config,
