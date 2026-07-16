@@ -24,45 +24,56 @@ Best-effort local-only provenance for OpenClaw PR/issue bodies. Use during agent
 
 ## Helper
 
-```bash
-.agents/skills/agent-transcript/scripts/agent-transcript --help
+```text
+node "{baseDir}/scripts/agent-transcript" --help
 ```
 
 Find a likely local session:
 
-```bash
-.agents/skills/agent-transcript/scripts/agent-transcript find \
-  --query "$PR_TITLE $BRANCH_OR_PR_URL" \
-  --cwd "$PWD" \
-  --since-days 14
+```text
+node "{baseDir}/scripts/agent-transcript" find --query "<PR title> <branch or PR URL>" --cwd "<repo root>" --since-days 14
 ```
 
-`find` scans the newest 400 matching local JSONL logs by default across Codex, Claude, Pi, and OpenClaw agent sessions. Use `--max-files N` for a wider local search.
+`find` scans the newest 400 matching local JSONL logs by default across GitHub
+Copilot, Codex, Claude, Pi, and OpenClaw agent sessions. Copilot sessions are
+discovered under `~/.copilot/session-state/*/events.jsonl`. Use `--max-files N`
+for a wider local search.
+
+For Copilot events, keep only original `user.message` content, visible
+`assistant.message` content, and aggregate tool-call counts. Drop system
+messages, transformed prompts, hooks, opaque/encrypted reasoning, and raw tool
+results.
 
 Render a PR/issue body section:
 
-```bash
-.agents/skills/agent-transcript/scripts/agent-transcript render \
-  --session "$SESSION_JSONL" \
-  --out /tmp/agent-transcript.md
+```text
+node "{baseDir}/scripts/agent-transcript" render --session "<session.jsonl>" --out "<agent-transcript.md>"
 ```
 
 Preview one candidate session locally:
 
+```text
+node "{baseDir}/scripts/agent-transcript" preview --session "<session.jsonl>" --out "<agent-transcript-preview.html>"
+```
+
+Open the generated preview with the host-native command:
+
+```powershell
+Start-Process "<agent-transcript-preview.html>"
+```
+
 ```bash
-.agents/skills/agent-transcript/scripts/agent-transcript preview \
-  --session "$SESSION_JSONL" \
-  --out /tmp/agent-transcript-preview.html
-open /tmp/agent-transcript-preview.html
+# macOS
+open "<agent-transcript-preview.html>"
+
+# Linux
+xdg-open "<agent-transcript-preview.html>"
 ```
 
 Append/update a body file before `gh pr create --body-file` or connector PR creation:
 
-```bash
-.agents/skills/agent-transcript/scripts/agent-transcript append-body \
-  --body /tmp/pr-body.md \
-  --session "$SESSION_JSONL" \
-  --out /tmp/pr-body.with-transcript.md
+```text
+node "{baseDir}/scripts/agent-transcript" append-body --body "<pr-body.md>" --session "<session.jsonl>" --out "<pr-body.with-transcript.md>"
 ```
 
 ## PR/Issue Workflow
@@ -71,7 +82,7 @@ Append/update a body file before `gh pr create --body-file` or connector PR crea
 2. Run `find` with title, branch, PR URL/number if known, and cwd.
 3. If a high-confidence session is found, ask:
    `Include a redacted agent transcript? It helps reviewers and can make the PR easier to prioritize. I can open a local preview first.`
-4. If the user wants preview, run `preview`, open the HTML with `open`, and wait for confirmation.
+4. If the user wants preview, run `preview`, open the HTML with the host-native command above, and wait for confirmation.
 5. Before insertion, trim unrelated session turns from the generated section. Keep only turns that explain this PR/issue's goal, implementation choices, files, tests, proof, blockers, and final outcome.
 6. If the user approves, run `append-body`.
 7. Use the enriched body file for creation/update.
@@ -81,8 +92,6 @@ Append/update a body file before `gh pr create --body-file` or connector PR crea
 
 For manual audits across many PR/session candidates, create a local HTML preview from a local JSON file. This is for maintainers only and is not part of the PR/issue workflow:
 
-```bash
-.agents/skills/agent-transcript/scripts/agent-transcript html \
-  --prs /tmp/recent-prs.json \
-  --out /tmp/agent-transcript-preview.html
+```text
+node "{baseDir}/scripts/agent-transcript" html --prs "<recent-prs.json>" --out "<agent-transcript-preview.html>"
 ```

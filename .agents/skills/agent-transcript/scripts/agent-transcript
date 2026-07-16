@@ -8,6 +8,8 @@ const MARKER_START = "<!-- agent-transcript:start -->";
 const MARKER_END = "<!-- agent-transcript:end -->";
 const DEFAULT_MAX_CHARS = 50000;
 const DEFAULT_ENTRY_MAX_CHARS = 6000;
+const POSIX_LOCAL_ROOTS =
+  "(?:Applications|Library|System|Users|Volumes|app|bin|boot|builds?|data|dev|etc|home|lib|lib64|media|mnt|nix|opt|private|proc|repo|root|run|sbin|snap|srv|tmp|usr|var|workspaces?)";
 
 function usage() {
   console.log(`Usage:
@@ -51,6 +53,90 @@ function homePath(...parts) {
   return path.join(os.homedir(), ...parts);
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function replacePathToken(value, marker) {
+  const trailing = value.match(/[.,;!?]+$/)?.[0] || "";
+  return `${marker}${trailing}`;
+}
+
+function replacePosixPath(value, prefix, localPath) {
+  if (prefix && /[A-Za-z0-9_./\\]/.test(prefix)) return value;
+  return `${prefix}${replacePathToken(localPath, "[LOCAL_PATH]")}`;
+}
+
+function replacePosixNetworkPath(value, prefix, localPath, offset, input) {
+  if (prefix === ":") {
+    const scheme = input.slice(0, offset + 1).match(/([A-Za-z][A-Za-z0-9+.-]*):$/)?.[1]?.toLowerCase();
+    if (scheme === "http" || scheme === "https") return value;
+  }
+  return replacePosixPath(value, prefix, localPath);
+}
+
+function isPrivateIpv4(hostname) {
+  const parts = hostname.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  return (
+    parts[0] === 10 ||
+    parts[0] === 127 ||
+    (parts[0] === 169 && parts[1] === 254) ||
+    (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+    (parts[0] === 192 && parts[1] === 168)
+  );
+}
+
+function isPrivateHostname(hostname) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (!normalized) return true;
+  if (isPrivateIpv4(normalized)) return true;
+  if (
+    normalized === "0.0.0.0" ||
+    normalized === "::" ||
+    normalized === "::1" ||
+    /^f[cd][0-9a-f]{2}:/i.test(normalized) ||
+    /^fe[89ab][0-9a-f]:/i.test(normalized)
+  ) {
+    return true;
+  }
+  if (!normalized.includes(".") && !normalized.includes(":")) return true;
+  return /(?:^|\.)(?:corp|home|internal|intranet|lan|local|localhost)$/.test(normalized);
+}
+
+function isPrivateUrl(value, depth = 0) {
+  const trailing = value.match(/[.,;!?]+$/)?.[0] || "";
+  const candidate = trailing ? value.slice(0, -trailing.length) : value;
+  try {
+    const url = new URL(candidate);
+    if (url.username || url.password || isPrivateHostname(url.hostname)) return true;
+    const nestedValues = [...url.searchParams.values()];
+    if (url.hash.length > 1) {
+      try {
+        nestedValues.push(decodeURIComponent(url.hash.slice(1)));
+      } catch {
+        nestedValues.push(url.hash.slice(1));
+      }
+    }
+    if (depth >= 4) {
+      return nestedValues.some((nestedValue) => /https?:\/\//i.test(nestedValue));
+    }
+    return nestedValues.some((nestedValue) =>
+      (nestedValue.match(/https?:\/\/[^\s`"'<>\|)]+/gi) || []).some((nestedUrl) =>
+        isPrivateUrl(nestedUrl, depth + 1),
+      ),
+    );
+  } catch {
+    return true;
+  }
+}
+
+function replacePrivateUrl(value) {
+  return isPrivateUrl(value) ? replacePathToken(value, "[PRIVATE_URL]") : value;
+}
+
 function openClawSessionRoots() {
   const stateDir = process.env.OPENCLAW_STATE_DIR || homePath(".openclaw");
   const agentsDir = path.join(stateDir, "agents");
@@ -78,6 +164,7 @@ function defaultRoots() {
   return [
     homePath(".codex", "sessions"),
     homePath(".claude", "projects"),
+    homePath(".copilot", "session-state"),
     homePath(".pi", "agent", "sessions"),
     ...openClawSessionRoots(),
   ];
@@ -133,19 +220,30 @@ function stringContent(value) {
 function detectAgent(file, rows) {
   if (file.includes(`${path.sep}.codex${path.sep}`)) return "codex";
   if (file.includes(`${path.sep}.claude${path.sep}`)) return "claude";
+  if (
+    file.includes(`${path.sep}.copilot${path.sep}session-state${path.sep}`) ||
+    rows.some((row) => row?.type === "session.start" && row?.data?.producer === "copilot-agent")
+  ) {
+    return "copilot";
+  }
   if (file.includes(`${path.sep}.pi${path.sep}`)) return "pi";
   if (
     file.includes(`${path.sep}.openclaw${path.sep}`) ||
-    (file.includes(`${path.sep}agents${path.sep}`) && file.includes(`${path.sep}sessions${path.sep}`))
+    (file.includes(`${path.sep}agents${path.sep}`) &&
+      file.includes(`${path.sep}sessions${path.sep}`))
   ) {
     return "openclaw";
   }
-  if (rows.some((row) => row?.type === "session_meta" || row?.type === "response_item")) return "codex";
+  if (rows.some((row) => row?.type === "session_meta" || row?.type === "response_item"))
+    return "codex";
   if (rows.some((row) => row?.sessionId && row?.userType)) return "claude";
   return "agent";
 }
 
 function eventText(row) {
+  if (row?.type === "user.message" || row?.type === "assistant.message") {
+    return stringContent(row.data?.content);
+  }
   if (row?.type === "event_msg") {
     const payload = row.payload || {};
     return stringContent(payload.message || payload.text_elements || payload.content);
@@ -161,6 +259,13 @@ function eventText(row) {
 }
 
 function eventRole(row) {
+  if (row?.type === "user.message") return "user";
+  if (row?.type === "assistant.message") return "assistant";
+  if (row?.type === "tool.execution_start" || row?.type === "external_tool.requested")
+    return "tool";
+  if (row?.type === "tool.execution_complete" || row?.type === "external_tool.completed") {
+    return "tool_output";
+  }
   if (row?.type === "event_msg") {
     const type = row.payload?.type;
     if (type === "user_message") return "user";
@@ -199,6 +304,21 @@ function hasSetupBlob(text) {
 
 function redact(input, stats) {
   let s = String(input ?? "");
+  const homeVariants = new Set([
+    os.homedir(),
+    os.homedir().replaceAll("\\", "/"),
+    os.homedir().replaceAll("/", "\\"),
+  ]);
+  for (const home of homeVariants) {
+    if (!home) continue;
+    const before = s;
+    const homePathPattern = new RegExp(
+      `${escapeRegExp(home)}(?:[\\\\/][^\\r\\n\`"'<>\\|)]+|(?=$|[\\s\`"'<>\\|),.;!?:]))`,
+      "gi",
+    );
+    s = s.replace(homePathPattern, (value) => replacePathToken(value, "[HOME_PATH]"));
+    if (s !== before) stats.redactions++;
+  }
   const rules = [
     [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY]"],
     [/sk-[A-Za-z0-9_-]{20,}/g, "[REDACTED_OPENAI_KEY]"],
@@ -208,8 +328,17 @@ function redact(input, stats) {
     [/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{16,}/gi, "[REDACTED_AUTH_HEADER]"],
     [/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[REDACTED_EMAIL]"],
     [/\b(?:\+?\d[\d .()-]{7,}\d)\b/g, "[REDACTED_PHONE]"],
-    [/\/Users\/[^\s`"'>)]+/g, "[LOCAL_PATH]"],
-    [/~\/[^\s`"'>)]+/g, "[HOME_PATH]"],
+    [/\bhttps?:\/\/[^\s`"'<>\|)]+/gi, replacePrivateUrl],
+    [/\b[A-Za-z]:[\\/][^\r\n`"'<>\|)]+/g, (value) => replacePathToken(value, "[LOCAL_PATH]")],
+    [/\\\\[^\r\n`"'<>\|)]+/g, (value) => replacePathToken(value, "[LOCAL_PATH]")],
+    [/\/Users\/[^\r\n`"'<>\|)]+/g, (value) => replacePathToken(value, "[LOCAL_PATH]")],
+    [/\/home\/[^\r\n`"'<>\|)]+/g, (value) => replacePathToken(value, "[LOCAL_PATH]")],
+    [/~[\\/][^\r\n`"'<>\|)]+/g, (value) => replacePathToken(value, "[HOME_PATH]")],
+    [/(^|.)(\/\/(?!\s)[^\r\n`"'<>\|)]+)/gm, replacePosixNetworkPath],
+    [
+      new RegExp(`(^|.)(/${POSIX_LOCAL_ROOTS}(?:/[^\\r\\n\`"'<>\\|)]+)?)`, "gm"),
+      replacePosixPath,
+    ],
     [/([?&](?:token|key|secret|signature|sig|access_token|auth)=)[^\s`"'>&]+/gi, "$1[REDACTED]"],
   ];
   for (const [re, repl] of rules) {
@@ -227,8 +356,19 @@ function unsafe(text) {
     /\b(?:user_session|_gh_sess|__Host-user_session_same_site|GH_SESSION_TOKEN)\b/i,
     /\b(?:GITHUB_TOKEN|GH_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY)\b/,
     /\/upload\/policies\/assets|uploadToken|authenticity_token/i,
+    /\b[A-Za-z]:[\\/]/,
+    /\\\\[^\\\s]+\\[^\\\s]+/,
+    /\/(?:Users|home)\//,
+    /~[\\/]/,
+    /(^|[^A-Za-z0-9_./\\:])\/\/(?![\/\s])/m,
+    new RegExp(`(^|[^A-Za-z0-9_./\\\\])/${POSIX_LOCAL_ROOTS}(?:/|$)`, "m"),
+    /\[HOME_PATH\](?=[^\s`"'<>\|),.;!?:])/,
   ];
-  return patterns.filter((pattern) => pattern.test(text)).map((pattern) => String(pattern));
+  const findings = patterns.filter((pattern) => pattern.test(text)).map((pattern) => String(pattern));
+  if ((text.match(/\bhttps?:\/\/[^\s`"'<>\|)]+/gi) || []).some((url) => isPrivateUrl(url))) {
+    findings.push("private URL");
+  }
+  return findings;
 }
 
 function normalizeEntry(role, text, stats, options = {}) {
@@ -315,7 +455,7 @@ function shellFamily(command) {
 }
 
 function toolCallFamily(row) {
-  const name = row.payload?.name || row.name || row.message?.name || row.type || "tool";
+  const name = row.data?.toolName || row.payload?.name || row.name || row.message?.name || row.type || "tool";
   if (name === "exec_command") {
     try {
       const args = JSON.parse(row.payload?.arguments || "{}");
@@ -373,7 +513,11 @@ function renderSession(file, options = {}) {
   for (const row of rows) {
     const role = eventRole(row);
     if (!role) continue;
-    if (hasEventDialogue && row.type === "response_item" && (role === "user" || role === "assistant")) {
+    if (
+      hasEventDialogue &&
+      row.type === "response_item" &&
+      (role === "user" || role === "assistant")
+    ) {
       continue;
     }
     if (role === "tool_output") {
@@ -410,7 +554,8 @@ function renderSession(file, options = {}) {
   recountEntries(stats, renderedItems);
   const maxChars = Number(options.maxChars || DEFAULT_MAX_CHARS);
   let joined = renderedItems.join("\n\n");
-  if (joined.length > maxChars) joined = `${joined.slice(0, maxChars).trimEnd()}\n\n...[transcript truncated to ${maxChars} chars]`;
+  if (joined.length > maxChars)
+    joined = `${joined.slice(0, maxChars).trimEnd()}\n\n...[transcript truncated to ${maxChars} chars]`;
   const headerBits = [options.title, options.url].filter(Boolean).join(" | ");
   const unsafeAfter = unsafe(joined);
   const safe = unsafeAfter.length === 0;
@@ -480,7 +625,10 @@ function scoreScanRecord(record, terms, cwd) {
   }
   if (cwd) {
     const cwdLower = cwd.toLowerCase();
-    if (haystack.includes(cwdLower) || record.file.toLowerCase().includes(cwdLower.replaceAll("/", "-"))) {
+    if (
+      haystack.includes(cwdLower) ||
+      record.file.toLowerCase().includes(cwdLower.replaceAll("/", "-"))
+    ) {
       score += 8;
       reasons.push("cwd");
     }
@@ -602,7 +750,8 @@ function main() {
   if (command === "render") {
     if (!args.session) throw new Error("--session is required");
     const rendered = renderSession(args.session, args);
-    if (!rendered.safe) throw new Error(`unsafe transcript after redaction: ${rendered.unsafeAfter.join(", ")}`);
+    if (!rendered.safe)
+      throw new Error(`unsafe transcript after redaction: ${rendered.unsafeAfter.join(", ")}`);
     if (args.out) fs.writeFileSync(args.out, rendered.markdown);
     else process.stdout.write(rendered.markdown);
     return;
@@ -610,7 +759,8 @@ function main() {
   if (command === "preview") {
     if (!args.session) throw new Error("--session is required");
     const rendered = renderSession(args.session, args);
-    if (!rendered.safe) throw new Error(`unsafe transcript after redaction: ${rendered.unsafeAfter.join(", ")}`);
+    if (!rendered.safe)
+      throw new Error(`unsafe transcript after redaction: ${rendered.unsafeAfter.join(", ")}`);
     const output = singlePreviewDocument({
       title: args.title || "Agent Transcript Preview",
       url: args.url || "",
@@ -625,7 +775,8 @@ function main() {
   if (command === "append-body") {
     if (!args.body || !args.session) throw new Error("--body and --session are required");
     const rendered = renderSession(args.session, args);
-    if (!rendered.safe) throw new Error(`unsafe transcript after redaction: ${rendered.unsafeAfter.join(", ")}`);
+    if (!rendered.safe)
+      throw new Error(`unsafe transcript after redaction: ${rendered.unsafeAfter.join(", ")}`);
     const body = fs.readFileSync(args.body, "utf8");
     const next = replaceSection(body, rendered.markdown);
     if (args.out) fs.writeFileSync(args.out, next);
